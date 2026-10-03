@@ -109,6 +109,9 @@ fetch_src_instance
 _ms_log "コピー元: $DB_ID ($ENGINE) $HOST:$PORT user=$USER db=${DBNAME:--}"
 
 # ---- ダンプ --------------------------------------------------------------------
+# ダンプにはDBの中身（機密）が平文で入るため、所有者のみ読み取り可能な権限で作る
+umask 077
+
 if [[ -z "$OUT" ]]; then
     OUT="${DB_ID}-$(date +%Y%m%d%H%M%S).sql"
 fi
@@ -145,6 +148,7 @@ else
     _ms_log "既存のダンプを使います: $OUT"
 fi
 
+chmod 600 "$OUT" 2>/dev/null || true   # 既存ファイル流用時も所有者のみに制限
 DUMP_SIZE=$(du -h "$OUT" | cut -f1)
 _ms_log "ダンプ完了: $OUT ($DUMP_SIZE)"
 
@@ -184,11 +188,21 @@ fi
 
 case "$ENGINE" in
     postgres*)
-        PGPASSWORD="${!TO_PW_ENV}" psql -h "$TO_HOST" -p "$TO_PORT" -U "$TO_USER" -d "$TO_DBNAME" \
-            -v ON_ERROR_STOP=0 -f "$OUT"
+        # SQLエラーがあれば即停止（部分適用を「成功」と誤認させない）
+        if ! PGPASSWORD="${!TO_PW_ENV}" psql -h "$TO_HOST" -p "$TO_PORT" -U "$TO_USER" -d "$TO_DBNAME" \
+            -v ON_ERROR_STOP=1 -f "$OUT"; then
+            _ms_err "リストア中にSQLエラーが発生しました（途中まで適用された可能性があります）"
+            _ms_err "ダンプは残しています: $OUT — 内容を確認の上、再実行してください"
+            exit 1
+        fi
         ;;
     mysql*)
-        MYSQL_PWD="${!TO_PW_ENV}" mysql -h "$TO_HOST" -P "$TO_PORT" -u "$TO_USER" "$TO_DBNAME" < "$OUT"
+        # mysql クライアントは非対話実行でエラー時に非ゼロで終了する
+        if ! MYSQL_PWD="${!TO_PW_ENV}" mysql -h "$TO_HOST" -P "$TO_PORT" -u "$TO_USER" "$TO_DBNAME" < "$OUT"; then
+            _ms_err "リストア中にSQLエラーが発生しました（途中まで適用された可能性があります）"
+            _ms_err "ダンプは残しています: $OUT — 内容を確認の上、再実行してください"
+            exit 1
+        fi
         ;;
 esac
 

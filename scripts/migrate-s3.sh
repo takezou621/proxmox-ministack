@@ -113,9 +113,15 @@ if [[ "$TO" == "aws" && -z "$TO_ENDPOINT" ]]; then
 fi
 
 # ---- 2段階sync ----------------------------------------------------------------
-SYNC_FLAGS=()
-(( DRYRUN )) && SYNC_FLAGS+=(--dry-run)
-(( DELETE )) && SYNC_FLAGS+=(--delete)
+# 取得側（source -> stage）は常に --delete で「ソースの完全ミラー」を作る。
+# これを怠ると過去の同期で stage に残った古いファイルが、コピー元で削除済みでも
+# 書き戻し時に復活してしまうため。
+# 書き戻し側（stage -> dest）の --delete は利用者が明示的に指定する（非破壊デフォルト）。
+PULL_FLAGS=(--delete)
+PUSH_FLAGS=()
+# aws s3 系のドライランは --dryrun（ハイフンなし）。スクリプト自体のオプションは --dry-run
+(( DRYRUN )) && { PULL_FLAGS+=(--dryrun); PUSH_FLAGS+=(--dryrun); }
+(( DELETE )) && PUSH_FLAGS+=(--delete)
 
 TOTAL_O=0
 for B in $BUCKETS; do
@@ -127,31 +133,36 @@ for B in $BUCKETS; do
         continue
     fi
 
-    # コピー先にバケットが無ければ作る（tfstateバケットは除く）
-    if ! aws_dst s3api head-bucket --bucket "$B" >/dev/null 2>&1; then
-        if [[ "$TO" == "aws" && -z "$TO_ENDPOINT" ]]; then
-            REGION="${AWS_REGION:-ap-northeast-1}"
-            _ms_log "コピー先にバケットが無いため作成します: $B (region: $REGION)"
-            if [[ "$REGION" == "us-east-1" ]]; then
-                aws_dst s3api create-bucket --bucket "$B" --region "$REGION"
-            else
-                aws_dst s3api create-bucket --bucket "$B" --region "$REGION" \
-                    --create-bucket-configuration LocationConstraint="$REGION"
-            fi
+    # コピー先にバケットが無い場合:
+    #   通常   -> 作成する
+    #   dry-run -> 作成もスキップする（dry-run はコピー先に一切変更を加えない）
+    if aws_dst s3api head-bucket --bucket "$B" >/dev/null 2>&1; then
+        :
+    elif (( DRYRUN )); then
+        _ms_warn "dry-run: コピー先にバケットが無いためこのバケットの同期をスキップします（実行時は作成されます）: $B"
+        continue
+    elif [[ "$TO" == "aws" && -z "$TO_ENDPOINT" ]]; then
+        REGION="${AWS_REGION:-ap-northeast-1}"
+        _ms_log "コピー先にバケットが無いため作成します: $B (region: $REGION)"
+        if [[ "$REGION" == "us-east-1" ]]; then
+            aws_dst s3api create-bucket --bucket "$B" --region "$REGION"
         else
-            _ms_log "コピー先にバケットが無いため作成します: $B"
-            aws_dst s3api create-bucket --bucket "$B" --region "$(ms_region)"
+            aws_dst s3api create-bucket --bucket "$B" --region "$REGION" \
+                --create-bucket-configuration LocationConstraint="$REGION"
         fi
+    else
+        _ms_log "コピー先にバケットが無いため作成します: $B"
+        aws_dst s3api create-bucket --bucket "$B" --region "$(ms_region)"
     fi
 
     STAGE="$WORKDIR/$B"
     mkdir -p "$STAGE"
 
     _ms_log "  1/2 取得: s3://$B/$PREFIX -> $STAGE"
-    aws_src s3 sync "s3://$B/${PREFIX}" "$STAGE/" ${SYNC_FLAGS[@]+"${SYNC_FLAGS[@]}"}
+    aws_src s3 sync "s3://$B/${PREFIX}" "$STAGE/" ${PULL_FLAGS[@]+"${PULL_FLAGS[@]}"}
 
     _ms_log "  2/2 書き戻し: $STAGE/ -> s3://$B/${PREFIX} ($DST_LABEL)"
-    aws_dst s3 sync "$STAGE/" "s3://$B/${PREFIX}" ${SYNC_FLAGS[@]+"${SYNC_FLAGS[@]}"}
+    aws_dst s3 sync "$STAGE/" "s3://$B/${PREFIX}" ${PUSH_FLAGS[@]+"${PUSH_FLAGS[@]}"}
 
     N=$(find "$STAGE" -type f | wc -l | tr -d ' ')
     _ms_log "  完了: ${N} ファイル"

@@ -62,15 +62,21 @@ provider "aws" {
 `envs/ministack.tfvars` では `use_ministack = true`、`envs/aws.tfvars` では `false` になっており、
 `tf.sh` が `-var-file` で切替えます。`endpoints` が `null` のときは公式エンドポイントが使われます。
 
-### 2. tfstate の置き場所 — partial backend
+### 2. tfstate の置き場所 — 生成される backend ブロック
 
-`versions.tf` の `backend "s3" {}` は空で、実体は `envs/*.backend.hcl` を
-`terraform init -backend-config` で注入します（`tf.sh` が自動で行う）:
+`versions.tf` にはbackendを書かず、`scripts/tf.sh` が環境に応じて
+`backend.generated.tf`（gitignore対象）に backend ブロックを生成し、
+`terraform init -reconfigure` で接続先を切り替えます:
 
-| ファイル | 内容 |
-|---------|------|
-| `envs/ministack.backend.hcl` | MiniStack の S3（dummy認証 / path style / エンドポイントは `.env` から動的注入） |
-| `envs/aws.backend.hcl` | 本番AWSの S3 + DynamoDBロック（認証は標準チェーン） |
+| モード | 生成されるブロック | 接続先の実体 |
+|--------|------------------|-------------|
+| `ministack` | `backend "s3" {}` | `envs/ministack.backend.hcl` ＋ `.env` からの endpoint/region 注入（MiniStackのS3） |
+| `aws` | `backend "s3" {}` | `envs/aws.backend.hcl`（本番AWSのS3＋DynamoDBロック） |
+| `local` | `backend "local" {}` | カレントの `terraform.tfstate` |
+
+この方式により、`local` モードがs3モードのinit状態に引きずられず
+必ず独立したローカルstateで動きます（`-backend=false` 方式では
+planが `Backend initialization required` で失敗するため採用していない）。
 
 **tfstateは環境ごとに別々に管理**されるのがポイントです。
 「MiniStackで作ったstate」を「AWSに適用」するのではなく、
@@ -81,6 +87,16 @@ provider "aws" {
 
 terraform 以外（aws CLI、SDK、スクリプト）向けに `ms_use` / `ms_clear` を提供します。
 中身は `AWS_ENDPOINT_URL` 系の export なので、boto3や他ツールにも効きます。
+
+`ms_use` は切替前の `AWS_*` 環境変数（認証情報を含む）を退避し、`ms_clear` は
+それを復元します。そのため**環境変数で本番AWS認証を渡しているシェル**でも
+`ms_use` → `ms_clear` の往復で認証情報が失われません（CI でも安全）。
+`tf.sh aws` も、認証確認と `init` の前にこの切替を実行するため、
+`ms_use` 済みのシェルから呼んでも本物のAWSへ向きます。
+
+また `.env` の `MINISTACK_REGION` は `tf.sh` がプロバイダ（`aws_region`）と
+tfstateバックエンド（`region`）の両方へ注入します。リージョンを変える場合は
+`.env` の一箇所だけ変更すれば済みます。
 
 ---
 
@@ -126,6 +142,8 @@ locals {
    仕様です（上記参照）。`local` で apply した後に `ministack` に移ると
    stateがないため全リソースが「新規作成」扱いになります。
    最初にどのモードで運用するか決めて統一するのが安全です。
+   モード切替時は `-reconfigure` でstateを移行しない（切り捨てる）ため、
+   切り替え前に必要なら `terraform state pull` でバックアップを取ってください。
 
 3. **`tf.sh aws` はAWS認証が無いと init の前に止まる**
    `aws sts get-caller-identity` で事前チェックしています。

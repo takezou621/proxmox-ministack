@@ -6,7 +6,7 @@
 #
 #     環境:
 #       ministack  プロバイダ=MiniStack / state=MiniStack上のS3   （開発・お試し）
-#       local      プロバイダ=MiniStack / state=ローカルファイル   （最初の試用向け）
+#       local      プロバイダ=MiniStack / state=ローカルファイル   （未initのディレクトリで最初に試す用）
 #       aws        プロバイダ=本物のAWS  / state=AWSのS3+DynamoDB （本番）
 #
 #   例:
@@ -22,8 +22,8 @@
 #     STACK=my-stack scripts/tf.sh ministack plan
 #
 #   このスクリプトがやること:
-#     1. 環境に応じた tfvars と backend 設定を選ぶ
-#     2. ministack 環境なら -var で MiniStack ホストを注入（.env 由来）
+#     1. 環境に応じて、シェル環境（ms_use/ms_clear）を「最初に」切り替える
+#     2. 環境に応じた tfvars と backend 設定を選ぶ（.env のホスト・リージョンを注入）
 #     3. backend が前回と変わっていれば init -reconfigure（stateの移行は明示的に）
 # =============================================================================
 set -euo pipefail
@@ -45,49 +45,89 @@ command -v terraform >/dev/null 2>&1 || { _ms_err "terraform が見つかりま�
 
 cd "$STACK_DIR"
 
-# ---- 環境ごとの引数組み立て ---------------------------------------------------
+# ---- 環境ごとの設定（シェル環境の切替を必ずinit/認証確認より先に行う） ----------
 BACKEND_ARGS=()
 VAR_ARGS=()
-NEEDS_VARS=0
+BACKEND_TYPE="s3"   # ministack/aws は s3、local は local
 
 case "$ENV" in
     ministack)
+        # terraform / init プロセスにも MiniStack 向け env を継承させる
+        #（providers.tf のエンドポイント指定と二重になるが矛盾しない）
+        ms_use
         BACKEND_ARGS=(
             -backend-config="envs/ministack.backend.hcl"
             -backend-config="endpoint=$(ms_endpoint)"
             -backend-config="dynamodb_endpoint=$(ms_endpoint)"
             -backend-config="sts_endpoint=$(ms_endpoint)"
             -backend-config="iam_endpoint=$(ms_endpoint)"
+            -backend-config="region=$(ms_region)"
             -reconfigure
         )
-        VAR_ARGS=(-var-file=envs/ministack.tfvars -var="ministack_host=$(ms_host)" -var="ministack_port=$(ms_port)")
-        ;;
-    aws)
-        BACKEND_ARGS=(-backend-config=envs/aws.backend.hcl -reconfigure)
-        VAR_ARGS=(-var-file=envs/aws.tfvars)
-        # AWS_ENDPOINT_URL 等が export されたシェルから呼ばれても本物へ向くように掃除
+        VAR_ARGS=(
+            -var-file=envs/ministack.tfvars
+            -var="ministack_host=$(ms_host)"
+            -var="ministack_port=$(ms_port)"
+            -var="aws_region=$(ms_region)"
+        )
         ;;
     local)
-        BACKEND_ARGS=(-backend=false)
-        VAR_ARGS=(-var-file=envs/ministack.tfvars -var="ministack_host=$(ms_host)" -var="ministack_port=$(ms_port)")
+        ms_use
+        BACKEND_TYPE="local"
+        # s3 backend でinit済みだった場合、stateはリモートに残ったまま
+        # ローカルの空stateからやり直しになる（-reconfigure は移行しない）
+        if [[ -f "$STAMP_FILE" && "$(cat "$STAMP_FILE")" != "local" ]]; then
+            _ms_warn "$(cat "$STAMP_FILE") バックエンドから local へ切り替えます（リモートstateはそのまま残ります）"
+        fi
+        BACKEND_ARGS=(-reconfigure)
+        VAR_ARGS=(
+            -var-file=envs/ministack.tfvars
+            -var="ministack_host=$(ms_host)"
+            -var="ministack_port=$(ms_port)"
+            -var="aws_region=$(ms_region)"
+        )
         ;;
-esac
-
-case "$ENV" in
     aws)
-        # init（バックエンド接続）の前に認証を確認しておく
+        # 本番backendにテスト用のローカルstateが持ち込まれる事故を防ぐ（先にローカルチェック）
+        if [[ -s terraform.tfstate ]]; then
+            _ms_err "ローカルに terraform.tfstate が残っています（local モードのstateの可能性）"
+            _ms_err "aws バックエンドへは移行しません。以下のいずれかを行ってください:"
+            _ms_err "  - 続行: mv terraform.tfstate terraform.tfstate.local-backup"
+            _ms_err "  - local のリソースを片付ける: scripts/tf.sh local destroy"
+            exit 1
+        fi
+        # ms_use 済みのシェルから呼ばれても確実に本物へ向ける（認証確認・init の前に実行）
+        ms_clear
         if ! aws sts get-caller-identity >/dev/null 2>&1; then
             _ms_err "本物のAWS認証がありません（aws sts get-caller-identity が失敗）"
             _ms_err "aws sso login / 環境変数 / プロファイルを設定してから再実行してください"
             exit 1
         fi
+        BACKEND_ARGS=(-backend-config=envs/aws.backend.hcl -reconfigure)
+        VAR_ARGS=(-var-file=envs/aws.tfvars)
         ;;
 esac
+
+# ---- バックエンド型のブロックを生成（local モードを確実に動かすため） ----------
+# versions.tf に backend ブロックを書くと -backend=false でもplanが
+# "Backend initialization required" で失敗するため、環境に応じてここで生成する。
+BACKEND_TF="backend.generated.tf"
+BACKEND_BLOCK=$(printf 'terraform {\n  backend "%s" {}\n}' "$BACKEND_TYPE")
+if [[ ! -f "$BACKEND_TF" ]] || [[ "$(cat "$BACKEND_TF")" != "$BACKEND_BLOCK" ]]; then
+    printf '%s\n' "$BACKEND_BLOCK" > "$BACKEND_TF"
+fi
 
 # ---- terraform 実行前の環境整備 ----------------------------------------------
 terraform_init() {
     _ms_log "terraform init ($ENV backend)"
-    if ! terraform init -input=false "${BACKEND_ARGS[@]}" "$@" >/dev/null; then
+    # -force-copy: backendタイプ切替（local⇄s3）時の対話プロンプトを抑止する。
+    #   挙動（実測）: タイプ切替時はローカルstateを移行し、
+    #   同タイプ（ministack⇄aws）の接続先変更ではstateを移行しない（分離維持）
+    local had_local_state=0
+    if [[ -s terraform.tfstate ]]; then
+        had_local_state=1
+    fi
+    if ! terraform init -input=false -reconfigure -force-copy "${BACKEND_ARGS[@]}" "$@" >/dev/null; then
         _ms_err "terraform init に失敗しました"
         if [[ "$ENV" == "aws" ]]; then
             _ms_err "ヒント: tfstate用バケット/テーブルは作成済みですか? -> scripts/bootstrap-backend.sh aws"
@@ -100,6 +140,9 @@ terraform_init() {
     fi
     mkdir -p .terraform
     echo "$ENV" > "$STAMP_FILE"
+    if (( had_local_state )) && [[ "$BACKEND_TYPE" == "s3" ]]; then
+        _ms_warn "ローカルにあった terraform.tfstate を ${ENV} バックエンドへ移行しました"
+    fi
 }
 
 case "$CMD" in
@@ -108,32 +151,18 @@ case "$CMD" in
         _ms_log "init 完了 ($ENV)"
         exit 0
         ;;
-    plan|apply|destroy|refresh|import|plan-all|apply-all)
+    plan|apply|destroy|refresh|import)
         NEEDS_VARS=1
         ;;
 esac
 
-# 初回、または前回とbackend環境が違う場合は init し直す
-CURRENT_BACKEND="none"
-[[ -f "$STAMP_FILE" ]] && CURRENT_BACKEND="$(cat "$STAMP_FILE")"
-if [[ ! -d .terraform || "$CURRENT_BACKEND" != "$ENV" ]]; then
-    terraform_init
-fi
+# 初回・切替・同一環境のいずれでも毎回 init する（遅いが数秒。
+# 条件付きskipは「スタンプと実際のbackend設定の不整合」による事故を許すため採らない）
+terraform_init
 
 # ---- 実行 --------------------------------------------------------------------
-case "$ENV" in
-    ministack|local)
-        # terraform プロセスにも MiniStack 向けの env を渡す（providers.tf の
-        # エンドポイント指定と二重になるが、無害であって矛盾しない）
-        ms_use
-        ;;
-    aws)
-        ms_clear
-        ;;
-esac
-
-if (( NEEDS_VARS )); then
-    _ms_log "terraform $CMD ($ENV) ${VAR_ARGS[*]} $*"
+if [[ "${NEEDS_VARS:-0}" == "1" ]]; then
+    _ms_log "terraform $CMD ($ENV)"
     exec terraform "$CMD" -input=false "${VAR_ARGS[@]}" "$@"
 else
     exec terraform "$CMD" "$@"

@@ -2,9 +2,10 @@
 # =============================================================================
 # lib/ministack.sh — MiniStack / AWS 二重環境コアライブラリ
 #
-# このファイルは実行するものではなく、source して使う:
+# このファイルは実行するものではなく、source して使う（bash / zsh 両対応）:
 #
-#   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ministack.sh"
+#   source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ministack.sh"   # bash
+#   source "$(cd "$(dirname ${(%):-%N})/.." && pwd)/lib/ministack.sh"            # zsh
 #
 # 主なAPI:
 #   ms_endpoint            MiniStack のエンドポイントURLを表示 (http://HOST:PORT)
@@ -74,8 +75,12 @@ _ms_warn() { printf '\033[1;33m[ms:warn]\033[0m %s\n' "$*" >&2; }
 _ms_err()  { printf '\033[1;31m[ms:error]\033[0m %s\n' "$*" >&2; }
 
 # ---- MiniStack / AWS 切り替え -------------------------------------------------
-# MiniStack が export する AWS 系環境変数の一覧（ms_clear でも使う）
-_MS_EXPORTED_VARS=(
+# ms_use は切替前の AWS_* 環境変数を退避し、ms_clear はそれを復元する。
+# そのため「環境変数で本番AWS認証を渡しているシェル」で ms_use -> ms_clear
+# しても認証情報は失われない（CIや exported creds との併用が安全）。
+
+# ms_use が上書きする対象（= ms_clear が復元する対象）
+_MS_MANAGED_VARS=(
     AWS_ENDPOINT_URL
     AWS_ENDPOINT_URL_S3
     AWS_ENDPOINT_URL_DYNAMODB
@@ -88,13 +93,31 @@ _MS_EXPORTED_VARS=(
     AWS_REGION
     AWS_EC2_METADATA_DISABLED
     AWS_PAGER
-    AWS_RETRY_MODE
-    MS_CURRENT_MODE
 )
+_MS_UNDEF="__ms_unset__"
+
+# 変数の現在値をstdoutへ返す（未定義なら非0で終了）。
+# bashの ${!name} / zshの ${(P)name} を使わず printenv で間接参照することで
+# bash / zsh 両方から source できるようにしている
+_ms_getvar() {
+    printenv "$1"
+}
 
 # カレントシェル（または呼び出し元関数）を MiniStack 向けに切替。
 # AWS CLI 2.13+/各種SDK は AWS_ENDPOINT_URL を尊重するため、--endpoint-url が不要になる
 ms_use() {
+    local v val
+    # 既存値の退避は「初回の ms_use」のみ行う（連続 ms_use で元値を潰さない）
+    if [[ -z "${_MS_SAVED:-}" ]]; then
+        for v in "${_MS_MANAGED_VARS[@]}"; do
+            if val="$(_ms_getvar "$v")"; then
+                export "_MS_PREV_${v}=${val}"
+            else
+                export "_MS_PREV_${v}=${_MS_UNDEF}"
+            fi
+        done
+        export _MS_SAVED=1
+    fi
     export AWS_ENDPOINT_URL="$(ms_endpoint)"
     export AWS_ACCESS_KEY_ID="test"
     export AWS_SECRET_ACCESS_KEY="test"
@@ -106,14 +129,30 @@ ms_use() {
     _ms_log "MiniStack モードに切り替えました: ${AWS_ENDPOINT_URL} (region: ${AWS_DEFAULT_REGION})"
 }
 
-# 本物の AWS 向けに戻す（認証は標準チェーン: 環境変数/SSO/~/.aws/credentials）
+# 本物の AWS 向けに戻す。
+# ms_use された形跡があれば当時の値（認証情報を含む）へ復元し、無ければ
+# エンドポイント向きのみ解除して認証情報には触れない。
 ms_clear() {
-    local v
-    for v in "${_MS_EXPORTED_VARS[@]}"; do
-        unset "$v" 2>/dev/null || true
-    done
+    local v ref val
+    if [[ -n "${_MS_SAVED:-}" ]]; then
+        for v in "${_MS_MANAGED_VARS[@]}"; do
+            ref="_MS_PREV_${v}"
+            if val="$(_ms_getvar "$ref")"; then
+                if [[ "$val" == "$_MS_UNDEF" ]]; then
+                    unset "$v" 2>/dev/null || true
+                else
+                    export "$v=$val"
+                fi
+            fi
+            unset "$ref" 2>/dev/null || true
+        done
+        unset _MS_SAVED 2>/dev/null || true
+    else
+        unset AWS_ENDPOINT_URL AWS_ENDPOINT_URL_S3 AWS_ENDPOINT_URL_DYNAMODB \
+            AWS_ENDPOINT_URL_SQS AWS_ENDPOINT_URL_RDS 2>/dev/null || true
+    fi
     export MS_CURRENT_MODE="aws"
-    _ms_log "AWS モードに切り替えました（標準の認証チェーンを使用）"
+    _ms_log "AWS モードに切り替えました（ms_use 前の認証・設定へ復元）"
 }
 
 # 1コマンドだけMiniStack向けの aws を実行（サブシェルなので現在のシェルは汚さない）
@@ -170,7 +209,9 @@ ms_health() {
 ms_reset() {
     local url="$(ms_endpoint)/_ministack/reset"
     _ms_warn "MiniStack の全状態（S3オブジェクト・DBインスタンス定義等）を消去します"
-    read -r -p "本当に実行しますか? yes と入力: " ans
+    printf '本当に実行しますか? yes と入力: ' >&2
+    local ans
+    read -r ans
     [[ "$ans" == "yes" ]] || { _ms_log "中断しました"; return 1; }
     curl -fsS -X POST "$url" && echo
     _ms_log "リセット完了"

@@ -82,7 +82,8 @@ export AWS_SECRET_ACCESS_KEY=test
 
 ## 開発マシンから aws CLI で触る
 
-`lib/ministack.sh` を source すると切替が1行でできます:
+`lib/ministack.sh` を source すると切替が1行でできます
+（bash・zsh両方で動作します）:
 
 ```bash
 source lib/ministack.sh
@@ -91,7 +92,7 @@ ms_use                    # これ以降の aws は MiniStack 向き（AWS_ENDPO
 aws s3 ls
 aws sqs list-queues
 
-ms_clear                  # 本物のAWSに戻す
+ms_clear                  # 本物のAWSに戻す（ms_use 前の認証情報へ復元）
 ```
 
 1コマンドだけ向けるなら:
