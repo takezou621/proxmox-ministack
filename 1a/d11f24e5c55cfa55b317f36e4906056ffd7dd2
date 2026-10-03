@@ -1,0 +1,70 @@
+.env.example
+  h_864205080385bc 1-37
+.gitignore
+  h_864205080385bc 1-18
+LICENSE
+  h_864205080385bc 1-21
+Makefile
+  h_864205080385bc 1-73
+README.md
+  h_864205080385bc 1-127
+compose/docker-compose.yml
+  h_864205080385bc 1-79
+docs/01-proxmox-setup.md
+  h_864205080385bc 1-109
+docs/02-ministack-operations.md
+  h_864205080385bc 1-128
+docs/03-terraform-workflow.md
+  h_864205080385bc 1-134
+docs/04-migrate-to-aws.md
+  h_864205080385bc 1-171
+lib/ministack.sh
+  h_864205080385bc 1-199
+provision/create-lxc.sh
+  h_864205080385bc 1-103
+scripts/bootstrap-backend.sh
+  h_864205080385bc 1-84
+scripts/healthcheck.sh
+  h_864205080385bc 1-25
+scripts/migrate-rds.sh
+  h_864205080385bc 1-196
+scripts/migrate-s3.sh
+  h_864205080385bc 1-165
+scripts/ministack-down.sh
+  h_864205080385bc 1-30
+scripts/ministack-up.sh
+  h_864205080385bc 1-33
+scripts/tf.sh
+  h_864205080385bc 1-140
+terraform/base-stack/.terraform.lock.hcl
+  h_864205080385bc 1-26
+terraform/base-stack/envs/aws.backend.hcl
+  h_864205080385bc 1-12
+terraform/base-stack/envs/aws.tfvars
+  h_864205080385bc 1-4
+terraform/base-stack/envs/ministack.backend.hcl
+  h_864205080385bc 1-17
+terraform/base-stack/envs/ministack.tfvars
+  h_864205080385bc 1-7
+terraform/base-stack/main.tf
+  h_864205080385bc 1-62
+terraform/base-stack/outputs.tf
+  h_864205080385bc 1-28
+terraform/base-stack/providers.tf
+  h_864205080385bc 1-71
+terraform/base-stack/variables.tf
+  h_864205080385bc 1-43
+terraform/base-stack/versions.tf
+  h_864205080385bc 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ad11f24e5c55cfa55b317f36e4906056ffd7dd2",
+  "prompts": {},
+  "humans": {
+    "h_864205080385bc": {
+      "author": "takezou621 <takezou621@gmail.com>"
+    }
+  }
+}
