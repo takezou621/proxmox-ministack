@@ -1,0 +1,34 @@
+.env.example
+  h_864205080385bc 26-28
+.gitignore
+  h_864205080385bc 15-16
+docs/02-ministack-operations.md
+  h_864205080385bc 85-86,95
+docs/03-terraform-workflow.md
+  h_864205080385bc 65,67-69,71-79,91-100,145-146
+lib/ministack.sh
+  h_864205080385bc 5,7-8,78-83,97-104,109-120,132-134,136-153,155,212-214
+scripts/migrate-rds.sh
+  h_864205080385bc 112-114,151,191-197,200-205
+scripts/migrate-s3.sh
+  h_864205080385bc 116-124,136-148,150-151,153-155,162,165
+scripts/tf.sh
+  h_864205080385bc 9,25-26,48,51,55-57,64,67-72,75-88,91-100,106-107,111-119,123-130,143-145,154,159-161,164-165
+terraform/base-stack/envs/ministack.backend.hcl
+  h_864205080385bc 4-5
+terraform/base-stack/envs/ministack.tfvars
+  h_864205080385bc 5-7
+terraform/base-stack/versions.tf
+  h_864205080385bc 2,4-5,7-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd053047fcd08777f4e1610e527502a66b5fc9c6",
+  "prompts": {},
+  "humans": {
+    "h_864205080385bc": {
+      "author": "takezou621 <takezou621@gmail.com>"
+    }
+  }
+}
