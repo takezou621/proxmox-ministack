@@ -1,0 +1,18 @@
+# ---- 環境設定（実環境のIP・ホスト名を含むためコミットしない） ----
+.env
+
+# ---- MiniStack のデータ永続化ディレクトリ ----
+compose/data/
+
+# ---- Terraform ----
+.terraform/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+
+# ---- 一時ファイル ----
+*.tmp
+.DS_Store
