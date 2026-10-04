@@ -300,8 +300,10 @@ ms_write_blocked_hosts_override() {
             echo "  ministack:"
             echo "    extra_hosts:"
             # glob 展開を避けるため、クォートなしの展開ではなく read -a で分割する（"*.md" が README.md に化けて受理されるのを防ぐ）
+            # read は最初の1行しか読まないため、先に区切り文字（カンマ・タブ・改行・CR）をスペースへ正規化する
+            #（改行区切りの値で2行目以降のホストが黙って落ち、遮断が効かなくなるのを防ぐ）
             local -a hosts
-            IFS=$' \t\n' read -r -a hosts <<< "${raw//,/ }"
+            read -r -a hosts <<< "$(printf '%s' "$raw" | tr ',\t\r\n' '    ')"
             for h in "${hosts[@]}"; do
                 # YAML への混入を避けるため、ホスト名として妥当な文字だけを許す
                 [[ "$h" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]] || { _ms_err "MINISTACK_BLOCKED_HOSTS に不正なホスト名があります: $h"; return 1; }
