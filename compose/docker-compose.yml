@@ -1,0 +1,79 @@
+# =============================================================================
+# MiniStack — Proxmox（LXC/VM）上で動かすローカルAWS環境
+#
+#   起動:  ../scripts/ministack-up.sh   （または docker compose --env-file ../.env up -d）
+#   停止:  ../scripts/ministack-down.sh
+#
+# このcomposeのポイント（docs/02-ministack-operations.md 参照）:
+#   * docker.sock をマウント → RDS(PostgreSQL/MySQL)・ElastiCache・Lambda が
+#     「本物のコンテナ」として起動する
+#   * PERSIST_STATE / S3_PERSIST / RDS_PERSIST → 再起動しても状態を保持
+#   * RDS_BASE_PORT=15432 / ELASTICACHE_BASE_PORT=16379 のポート範囲を公開 →
+#     開発マシンから Proxmox 上のDBコンテナへ直接接続できる
+#   * MINISTACK_HOST + MINISTACK_RDS_PUBLIC_ENDPOINT → RDS のエンドポイントが
+#     「ProxmoxホストのIP:ポート」で返るようになる（リモート開発に必須）
+# =============================================================================
+
+name: ministack
+
+services:
+  ministack:
+    image: ministackorg/ministack:${MINISTACK_VERSION:-latest}
+    container_name: ministack
+    ports:
+      # AWS API ゲートウェイ（全サービス共通の single port）のみ公開。
+      #
+      # 注意: RDS/ElastiCache のポート（15432〜/16379〜）はここで公開しないこと。
+      # MiniStack は docker.sock 経由で「兄弟コンテナ」としてDBを起動し、
+      # それらが自前でホストポートを公開するため、ここで範囲を割り当てると
+      # ポートが衝突してDBコンテナの起動が失敗する。
+      # 開発マシンからは ProxmoxホストのIP:15432+ で直接接続できる。
+      - "${MINISTACK_PORT:-4566}:4566"
+    environment:
+      - GATEWAY_PORT=4566
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # ---- 永続化（docs/02 参照） ----
+      - PERSIST_STATE=1          # サービス状態を /tmp/ministack-state へ保存
+      - S3_PERSIST=1             # S3オブジェクトを /tmp/ministack-data/s3 へ保存
+      - RDS_PERSIST=1            # RDSコンテナのデータを名前付きボリュームへ保存
+      # ---- テナント / リージョン ----
+      - MINISTACK_REGION=${MINISTACK_REGION:-ap-northeast-1}
+      - MINISTACK_ACCOUNT_ID=${MINISTACK_ACCOUNT_ID:-000000000000}
+      # ---- リモート開発向けエンドポイント調整 ----
+      # MINISTACK_HOST: RDS/ElastiCache のエンドポイント返却アドレス。
+      #   Proxmox運用では .env の MINISTACK_PUBLIC_HOST に VM/LXC の IP を設定する
+      - MINISTACK_HOST=${MINISTACK_PUBLIC_HOST:-localhost}
+      - MINISTACK_RDS_PUBLIC_ENDPOINT=1
+      # ---- DBコンテナのポート採番の起点（公開ポート範囲と一致させること） ----
+      - RDS_BASE_PORT=15432
+      - ELASTICACHE_BASE_PORT=16379
+    volumes:
+      - ./data/s3:/tmp/ministack-data/s3        # S3_PERSIST のデータ
+      - ./data/state:/tmp/ministack-state       # PERSIST_STATE のデータ
+      # RDS/ElastiCache/Lambda/ECS 等の「本物のコンテナ」起動に必要
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # MiniStack の内部キャッシュ用Redis（公式構成）。データは ./data/redis に永続化。
+  # ホスト側には公開しない（MiniStack は compose 内部ネットワーク経由で接続。
+  # 外部から見る必要がある場合は ports: ["127.0.0.1:6379:6379"] を追加）
+  redis:
+    image: redis:7-alpine
+    container_name: ministack-redis
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
