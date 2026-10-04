@@ -1,0 +1,101 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+# Cubic（AIコードレビュー）のリポジトリ設定
+# スキーマ: https://docs.cubic.dev/configure/cubic-yaml
+# このリポジトリで実際に発生したバグ（全角括弧直前の $VAR、\s 非対応、
+# --dryrun 表記ミス等）を custom_rules に反映している
+
+version: 1
+
+reviews:
+  enabled: true
+  sensitivity: medium
+  incremental_commits: true
+  check_drafts: false
+  resolve_threads_when_addressed: true
+  auto_approve: disabled
+
+  custom_instructions: |
+    このリポジトリは「自宅Proxmox上のMiniStack（ローカルAWSエミュレータ）で開発し、
+    Terraformの変数切替で本番AWSへ移行する」ためのbashスクリプト＋Terraform構成。
+
+    ## アーキテクチャ上の不変条件（違反を指摘すること）
+    - tfstate は環境ごとに完全分離する（ministack=MiniStack上のS3 / aws=本番AWSのS3+DynamoDB）。
+      環境間での state 移行は原則禁止（local→s3 への昇格時のみ -force-copy を許容）。
+      AWS移行は「全リソース新規作成」方式であり、state を使い回さない。
+    - scripts/tf.sh が backend.generated.tf を環境に応じて生成する。これをコミットしてはならない。
+      versions.tf に backend ブロックを書かないこと（書くと local モードが機能しなくなる）。
+    - compose/docker-compose.yml は RDS/ElastiCache のポート範囲（15432- / 16379-）を
+      公開してはならない。DB は MiniStack が兄弟コンテナとして自前でポートを公開するため、
+      compose 側で割り当てると衝突してDB起動が失敗する（実測済みの落とし穴）。
+    - MiniStack の公式挙動（https://github.com/ministackorg/ministack）と矛盾する変更を指摘すること:
+      永続化パスは /tmp/ministack-data/s3 と /tmp/ministack-state、RDS の Docker ボリューム命名は
+      ministack-rds-*-data、ヘルスチェックは /_ministack/health。
+    - スクリプトのログ出力（_ms_log/_ms_warn/_ms_err）は必ず stderr へ。
+      コマンド置換で ms_aws の出力を capture する箇所が多いため、stdout へのログ混入は実害になる。
+
+    ## レビュー時の追加確認ポイント
+    - macOS BSD grep/sed は \s 非対応 → 正規表現には [[:space:]] を使う
+    - JMESPath（aws CLI --query）は算術演算（a+b）非対応
+    - `aws s3 sync` のドライランは --dryrun（ハイフンなし）
+
+  custom_rules:
+    - name: bash-3-2-and-zsh-portability
+      description: |
+        すべてのシェルスクリプトは macOS bash 3.2 と zsh 両方で動くこと。
+        禁止: 連想配列（declare -A）、${var,,} 等の bash4+ 機能、
+        bash の間接展開 ${!var} / zsh の ${(P)var}（代わりに printenv ベースで）。
+        空配列展開は ${ARR[@]+"${ARR[@]}"} ガードを使う。
+        変数展開の直後にマルチバイト文字（全角括弧等）を置かない。
+        マルチバイト文字の直前の $VAR は必ず ${VAR} 形式で書く
+        （過去に $ENV（全角括弧の直前）で unbound variable を2回発生させた実績がある）。
+      include:
+        - "lib/**/*.sh"
+        - "scripts/**/*.sh"
+        - "provision/**/*.sh"
+
+    - name: state-isolation
+      description: |
+        Terraform の変更は環境分離（ministack/local/aws）を壊さないこと。
+        envs/*.backend.hcl と envs/*.tfvars の整合、aws.backend.hcl の bucket 名と
+        scripts/bootstrap-backend.sh の読み取り整合を確認する。
+        backend "s3" をエミュレータに向けるには endpoint 以外に
+        sts_endpoint / iam_endpoint / dynamodb_endpoint / region の注入が必要。
+      include:
+        - "terraform/**"
+        - "scripts/tf.sh"
+        - "scripts/bootstrap-backend.sh"
+
+    - name: secrets-and-data-safety
+      description: |
+        認証情報をファイルにコミットしない（.env は gitignore、ダミー認証 test/test は例外）。
+        パスワードは必ず環境変数経由（--password-env パターン）。
+        RDSダンプ等の機密ファイルは umask 077 / chmod 600 で作成し、
+        権限設定の失敗は無視せずエラー終了する。
+        破壊的操作（destroy / --reset-data / purge）は確認ダイアログまたは
+        --yes フラグを要求すること。
+      include:
+        - "lib/**/*.sh"
+        - "scripts/**/*.sh"
+        - "compose/**"
+
+    - name: migration-scripts-correctness
+      description: |
+        migrate-*.sh の変更は双方向（ministack→aws と aws→ministack）の両方を壊さないか確認。
+        aws s3 sync の stage は「コピー元の完全ミラー」（pull側は常に --delete）。
+        mysqldump は --databases を使わない（USE 文がリストア先指定を無効化する）。
+        psql は ON_ERROR_STOP=1。dry-run はコピー先に一切変更を加えないこと
+        （バケット作成も含む）。
+      include:
+        - "scripts/migrate-s3.sh"
+        - "scripts/migrate-rds.sh"
+        - "scripts/ministack-down.sh"
+
+  ignore:
+    files:
+      - "compose/data/**"
+      - "**/.terraform/**"
+      - "**/terraform.tfstate*"
+
+pr_descriptions:
+  generate: true
+  skip_if_author_description: true
