@@ -1,0 +1,32 @@
+docs/02-ministack-operations.md
+  h_864205080385bc 114
+docs/04-migrate-to-aws.md
+  h_864205080385bc 68-74,79-85,102,163-165,167-168,171-177,183-190,197
+lib/ministack.sh
+  h_864205080385bc 106-118,123-124,133-143,145,148-158,175-176,187,271-276
+provision/create-lxc.sh
+  h_864205080385bc 27-31,47,49-50,55,65,68
+scripts/bootstrap-backend.sh
+  h_864205080385bc 17-20,23,30-57
+scripts/migrate-rds.sh
+  h_864205080385bc 136-140,142-144,147,150,159-164
+scripts/migrate-s3.sh
+  h_864205080385bc 9-10,21-25,32-34,47-59,64-65,116-117,121,125,130,152-155,157-161,163-164,171,174,178,180,182,186-187,190,193-194,196-197,205
+scripts/ministack-down.sh
+  h_864205080385bc 22-39
+scripts/tf.sh
+  h_864205080385bc 91-102,106
+terraform/base-stack/envs/aws.backend.hcl
+  h_864205080385bc 2-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "175d0228b5176c29e708cd445cfc6e68c632a7f5",
+  "prompts": {},
+  "humans": {
+    "h_864205080385bc": {
+      "author": "takezou621 <takezou621@gmail.com>"
+    }
+  }
+}
