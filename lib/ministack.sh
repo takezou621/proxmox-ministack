@@ -299,7 +299,10 @@ ms_write_blocked_hosts_override() {
             echo "services:"
             echo "  ministack:"
             echo "    extra_hosts:"
-            for h in ${raw//,/ }; do
+            # glob 展開を避けるため、クォートなしの展開ではなく read -a で分割する（"*.md" が README.md に化けて受理されるのを防ぐ）
+            local -a hosts
+            IFS=$' \t\n' read -r -a hosts <<< "${raw//,/ }"
+            for h in "${hosts[@]}"; do
                 # YAML への混入を避けるため、ホスト名として妥当な文字だけを許す
                 [[ "$h" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]] || { _ms_err "MINISTACK_BLOCKED_HOSTS に不正なホスト名があります: $h"; return 1; }
                 echo "      - \"$h:127.0.0.1\""
