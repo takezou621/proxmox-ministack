@@ -103,11 +103,25 @@ _ms_getvar() {
     printenv "$1"
 }
 
+# 現在設定されている AWS_ENDPOINT_URL_<SERVICE> 形式の変数名を列挙する
+#（AWS CLI は AWS_ENDPOINT_URL よりサービス別変数を優先するため、
+#  ms_use はこれらも MiniStack 向けに上書きする）
+_ms_endpoint_var_names() {
+    local line k
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        k="${line%%=*}"
+        case "$k" in AWS_ENDPOINT_URL_*) echo "$k" ;; esac
+    done <<EOF
+$(printenv)
+EOF
+}
+
 # カレントシェル（または呼び出し元関数）を MiniStack 向けに切替。
 # AWS CLI 2.13+/各種SDK は AWS_ENDPOINT_URL を尊重するため、--endpoint-url が不要になる
 ms_use() {
     local v val
-    # 既存値の退避は「初回の ms_use」のみ行う（連続 ms_use で元値を潰さない）
+    # 既存値の退避は「初回の ms_use」のみ行う（連続 ms_use で元値を潰さない）。
+    # マネージ対象のほか、外部から設定された任意のサービス別 endpoint 変数も退避する
     if [[ -z "${_MS_SAVED:-}" ]]; then
         for v in "${_MS_MANAGED_VARS[@]}"; do
             if val="$(_ms_getvar "$v")"; then
@@ -116,9 +130,32 @@ ms_use() {
                 export "_MS_PREV_${v}=${_MS_UNDEF}"
             fi
         done
+        _MS_EXTRA_VARS=""
+        while IFS= read -r v; do
+            [[ -z "$v" ]] && continue
+            case " ${_MS_MANAGED_VARS[*]} " in *" $v "*) continue ;; esac
+            if val="$(_ms_getvar "$v")"; then
+                export "_MS_PREV_${v}=${val}"
+                _MS_EXTRA_VARS="${_MS_EXTRA_VARS:+$_MS_EXTRA_VARS }$v"
+            fi
+        done <<EOF
+$(_ms_endpoint_var_names)
+EOF
         export _MS_SAVED=1
+        export _MS_EXTRA_VARS="${_MS_EXTRA_VARS:-}"
     fi
     export AWS_ENDPOINT_URL="$(ms_endpoint)"
+    # サービス別変数は AWS_ENDPOINT_URL より優先されるため全て MiniStack へ向ける
+    while IFS= read -r v; do
+        [[ -z "$v" ]] && continue
+        export "$v=$(ms_endpoint)"
+    done <<EOF
+$(_ms_endpoint_var_names)
+AWS_ENDPOINT_URL_S3
+AWS_ENDPOINT_URL_DYNAMODB
+AWS_ENDPOINT_URL_SQS
+AWS_ENDPOINT_URL_RDS
+EOF
     export AWS_ACCESS_KEY_ID="test"
     export AWS_SECRET_ACCESS_KEY="test"
     export AWS_DEFAULT_REGION="$(ms_region)"
@@ -135,7 +172,8 @@ ms_use() {
 ms_clear() {
     local v ref val
     if [[ -n "${_MS_SAVED:-}" ]]; then
-        for v in "${_MS_MANAGED_VARS[@]}"; do
+        for v in "${_MS_MANAGED_VARS[@]}" ${_MS_EXTRA_VARS:-}; do
+            [[ -z "$v" ]] && continue
             ref="_MS_PREV_${v}"
             if val="$(_ms_getvar "$ref")"; then
                 if [[ "$val" == "$_MS_UNDEF" ]]; then
@@ -146,7 +184,7 @@ ms_clear() {
             fi
             unset "$ref" 2>/dev/null || true
         done
-        unset _MS_SAVED 2>/dev/null || true
+        unset _MS_SAVED _MS_EXTRA_VARS 2>/dev/null || true
     else
         unset AWS_ENDPOINT_URL AWS_ENDPOINT_URL_S3 AWS_ENDPOINT_URL_DYNAMODB \
             AWS_ENDPOINT_URL_SQS AWS_ENDPOINT_URL_RDS 2>/dev/null || true
@@ -230,7 +268,12 @@ ms_s3_purge() {
             ms_aws s3api list-object-versions --bucket "$bucket" --output json 2>/dev/null \
                 | jq -c '{Objects: [(.Versions // [])[], (.DeleteMarkers // [])[]] | map({Key, VersionId})}' > "$tmp" || break
             [[ "$(jq '.Objects | length' "$tmp")" -eq 0 ]] && break
-            ms_aws s3api delete-objects --bucket "$bucket" --delete "file://$tmp" >/dev/null 2>&1 || true
+            # 削除失敗（権限不足等）でループが止まらないよう、失敗時は明示的に終了する
+            if ! ms_aws s3api delete-objects --bucket "$bucket" --delete "file://$tmp" >/dev/null 2>&1; then
+                _ms_err "オブジェクトの削除に失敗しました: s3://$bucket （権限等を確認してください）"
+                rm -f "$tmp"
+                return 1
+            fi
         done
         rm -f "$tmp"
     fi

@@ -14,16 +14,46 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ministack.sh"
 
-TFSTATE_BUCKET="${TFSTATE_BUCKET:-proxmox-ministack-tfstate}"
-TFLOCK_TABLE="${TFLOCK_TABLE:-proxmox-ministack-tflock}"
+STACK="${STACK:-base-stack}"
+
+TFSTATE_BUCKET="${TFSTATE_BUCKET:-}"
+TFLOCK_TABLE="${TFLOCK_TABLE:-}"
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}"
+    sed -n '2,14p' "${BASH_SOURCE[0]}"
     exit 1
 }
 
 ENV="${1:-}"
 [[ "$ENV" == "ministack" || "$ENV" == "aws" ]] || usage
+
+# ---- backend設定ファイルから bucket/テーブル名を読む ---------------------------
+# aws.backend.hcl を書き換えた場合、bootstrap もその名前を使うことで
+# 「backend と bootstrap のバケット名不一致」を防ぐ。
+# 環境変数 TFSTATE_BUCKET / TFLOCK_TABLE が設定されていればそちらが優先される。
+case "$ENV" in
+    ministack) BACKEND_HCL="$MS_ROOT/terraform/$STACK/envs/ministack.backend.hcl" ;;
+    aws)       BACKEND_HCL="$MS_ROOT/terraform/$STACK/envs/aws.backend.hcl" ;;
+esac
+
+_hcl_value() {
+    # hcl から key="value" の value を抜き出す（コメント行は無視）。
+    # macOS BSD grep/sed は \s 非対応のため [[:space:]] を使う
+    grep -E "^[[:space:]]*$1[[:space:]]*=" "$BACKEND_HCL" 2>/dev/null \
+        | head -1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]+)".*/\1/'
+}
+
+if [[ -z "$TFSTATE_BUCKET" && -r "$BACKEND_HCL" ]]; then
+    TFSTATE_BUCKET="$(_hcl_value bucket || true)"
+fi
+if [[ -z "$TFLOCK_TABLE" && -r "$BACKEND_HCL" ]]; then
+    TFLOCK_TABLE="$(_hcl_value dynamodb_table || true)"
+fi
+
+# どちらも決まらなければデフォルトにフォールバック
+TFSTATE_BUCKET="${TFSTATE_BUCKET:-proxmox-ministack-tfstate}"
+TFLOCK_TABLE="${TFLOCK_TABLE:-proxmox-ministack-tflock}"
+_ms_log "対象: bucket=${TFSTATE_BUCKET} / locktable=${TFLOCK_TABLE}（${ENV}）"
 
 # aws を実行するサブシェル: ENV に応じて向き先を切り替える
 run_aws() {

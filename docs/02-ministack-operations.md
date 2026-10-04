@@ -111,6 +111,7 @@ CIに組み込む場合は `AWS_ENDPOINT_URL=http://<IP>:4566` 等を直接 expo
 ```bash
 make reset                                    # APIレベルで全消去（確認あり）
 scripts/ministack-down.sh --reset-data        # ディスク永続分も含めて完全初期化
+                                              # （RDSのデータボリュームは別途確認ダイアログ付きで削除）
 ```
 
 Terraform 管理のリソースを消す場合はリセットではなく `scripts/tf.sh ministack destroy` を

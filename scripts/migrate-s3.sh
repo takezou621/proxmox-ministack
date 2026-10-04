@@ -6,6 +6,8 @@
 #     scripts/migrate-s3.sh --list                          # コピー元のバケット一覧
 #     scripts/migrate-s3.sh                                 # 全バケットを MiniStack→AWS へ
 #     scripts/migrate-s3.sh --bucket my-bucket --prefix assets/
+#     scripts/migrate-s3.sh --bucket src1,src2:rename-dst   # 複数指定＋名前変更（src:dst）
+#     scripts/migrate-s3.sh --map my-app-ministack-artifacts:my-app-prod-artifacts
 #     scripts/migrate-s3.sh --dry-run                       # 何をするかだけ表示
 #     scripts/migrate-s3.sh --from aws --to ministack       # 逆方向（AWS→MiniStack＝切り戻し）
 #
@@ -16,12 +18,20 @@
 #
 #   注意: バケットの「中身」だけを移動する。バケット自体は Terraform
 #         （scripts/tf.sh aws apply）で先に作られている前提。
+#
+#   バケット名対応付け:
+#     コピー元とコピー先でバケット名が違う場合（例: *-ministack-artifacts →
+#     *-prod-artifacts）は --bucket に "src:dst" 形式を使うか、--map を指定する。
+#     指定しないバケットは同名のまま同期される。
 # =============================================================================
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ministack.sh"
 
 FROM="ministack"
 TO="aws"
+# エントリは "src:dst" 形式で保持する（同名の場合は "name:name" に正規化）。
+# S3バケット名にコロンは含まれないため区切りとして安全。bash 3.2 でも動くよう
+# 連想配列は使わない
 BUCKETS=""
 PREFIX=""
 WORKDIR="${WORKDIR:-${TMPDIR:-/tmp}}"
@@ -34,11 +44,25 @@ TO_ENDPOINT=""
 
 usage() { sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 1; }
 
+# "a,b" や "a:b" のカンマ区切りを "src:dst" 形式の改行区切りに正規化する
+normalize_entries() {
+    local raw="$1" item
+    printf '%s\n' "$raw" | tr ',' '\n' | while IFS= read -r item; do
+        item="${item//[[:space:]]/}"
+        [[ -z "$item" ]] && continue
+        case "$item" in
+            *:*) printf '%s\n' "$item" ;;
+            *)   printf '%s:%s\n' "$item" "$item" ;;
+        esac
+    done
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --from)         FROM="$2"; shift 2 ;;
         --to)           TO="$2"; shift 2 ;;
-        --bucket)       BUCKETS="$2"; shift 2 ;;
+        --bucket)       BUCKETS="${BUCKETS:+$BUCKETS$'\n'}$(normalize_entries "$2")"; shift 2 ;;
+        --map)          BUCKETS="${BUCKETS:+$BUCKETS$'\n'}$(normalize_entries "$2")"; shift 2 ;;
         --prefix)       PREFIX="${2%/}/"; shift 2 ;;
         --workdir)      WORKDIR="$2"; shift 2 ;;
         --dry-run)      DRYRUN=1; shift ;;
@@ -89,20 +113,21 @@ DST_LABEL="$TO${TO_ENDPOINT:+ ($TO_ENDPOINT)}"
 if [[ -z "$BUCKETS" ]]; then
     _ms_log "コピー元（${SRC_LABEL}）のバケット一覧を取得します"
     # tfstate用バケットはインフラ管理対象なのでデータ同期から除外
-    BUCKETS="$(aws_src s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' | grep -v '^proxmox-ministack-tfstate$' || true)"
-    if [[ -z "$BUCKETS" ]]; then
+    _MS_LISTED="$(aws_src s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' | grep -v '^proxmox-ministack-tfstate$' || true)"
+    if [[ -z "$_MS_LISTED" ]]; then
         _ms_log "コピーできるバケットがありません"
         exit 0
     fi
+    BUCKETS="$(printf '%s\n' "$_MS_LISTED" | while IFS= read -r b; do printf '%s:%s\n' "$b" "$b"; done)"
 fi
 
 if (( LIST )); then
-    echo "$BUCKETS"
+    printf '%s\n' "$BUCKETS" | cut -d: -f1
     exit 0
 fi
 
 _ms_log "同期: $SRC_LABEL -> $DST_LABEL"
-_ms_log "バケット: $(echo "$BUCKETS" | tr '\n' ' ')"
+_ms_log "バケット: $(printf '%s\n' "$BUCKETS" | tr '\n' ' ')"
 [[ -n "$PREFIX" ]] && _ms_log "prefix: $PREFIX"
 (( DRYRUN )) && _ms_warn "dry-run モード（実際には書き込みません）"
 (( DELETE )) && _ms_warn "--delete 有効: コピー元に無いオブジェクトはコピー先からも削除されます"
@@ -124,45 +149,52 @@ PUSH_FLAGS=()
 (( DELETE )) && PUSH_FLAGS+=(--delete)
 
 TOTAL_O=0
-for B in $BUCKETS; do
+for ENTRY in $BUCKETS; do
+    # エントリは "src:dst" 形式（normalize_entries で正規化済み）
+    SRC_B="${ENTRY%%:*}"
+    DST_B="${ENTRY##*:}"
     echo
-    _ms_log "== バケット: $B =="
+    if [[ "$SRC_B" == "$DST_B" ]]; then
+        _ms_log "== バケット: $SRC_B =="
+    else
+        _ms_log "== バケット: ${SRC_B} -> ${DST_B}（名前変更あり） =="
+    fi
 
-    if ! aws_src s3api head-bucket --bucket "$B" >/dev/null 2>&1; then
-        _ms_warn "コピー元に存在しません、スキップします: $B"
+    if ! aws_src s3api head-bucket --bucket "$SRC_B" >/dev/null 2>&1; then
+        _ms_warn "コピー元に存在しません、スキップします: $SRC_B"
         continue
     fi
 
     # コピー先にバケットが無い場合:
     #   通常   -> 作成する
     #   dry-run -> 作成もスキップする（dry-run はコピー先に一切変更を加えない）
-    if aws_dst s3api head-bucket --bucket "$B" >/dev/null 2>&1; then
+    if aws_dst s3api head-bucket --bucket "$DST_B" >/dev/null 2>&1; then
         :
     elif (( DRYRUN )); then
-        _ms_warn "dry-run: コピー先にバケットが無いためこのバケットの同期をスキップします（実行時は作成されます）: $B"
+        _ms_warn "dry-run: コピー先にバケットが無いためこのバケットの同期をスキップします（実行時は作成されます）: $DST_B"
         continue
     elif [[ "$TO" == "aws" && -z "$TO_ENDPOINT" ]]; then
         REGION="${AWS_REGION:-ap-northeast-1}"
-        _ms_log "コピー先にバケットが無いため作成します: $B (region: $REGION)"
+        _ms_log "コピー先にバケットが無いため作成します: $DST_B (region: $REGION)"
         if [[ "$REGION" == "us-east-1" ]]; then
-            aws_dst s3api create-bucket --bucket "$B" --region "$REGION"
+            aws_dst s3api create-bucket --bucket "$DST_B" --region "$REGION"
         else
-            aws_dst s3api create-bucket --bucket "$B" --region "$REGION" \
+            aws_dst s3api create-bucket --bucket "$DST_B" --region "$REGION" \
                 --create-bucket-configuration LocationConstraint="$REGION"
         fi
     else
-        _ms_log "コピー先にバケットが無いため作成します: $B"
-        aws_dst s3api create-bucket --bucket "$B" --region "$(ms_region)"
+        _ms_log "コピー先にバケットが無いため作成します: $DST_B"
+        aws_dst s3api create-bucket --bucket "$DST_B" --region "$(ms_region)"
     fi
 
-    STAGE="$WORKDIR/$B"
+    STAGE="$WORKDIR/$SRC_B"
     mkdir -p "$STAGE"
 
-    _ms_log "  1/2 取得: s3://$B/$PREFIX -> $STAGE"
-    aws_src s3 sync "s3://$B/${PREFIX}" "$STAGE/" ${PULL_FLAGS[@]+"${PULL_FLAGS[@]}"}
+    _ms_log "  1/2 取得: s3://$SRC_B/$PREFIX -> $STAGE"
+    aws_src s3 sync "s3://$SRC_B/${PREFIX}" "$STAGE/" ${PULL_FLAGS[@]+"${PULL_FLAGS[@]}"}
 
-    _ms_log "  2/2 書き戻し: $STAGE/ -> s3://$B/${PREFIX} ($DST_LABEL)"
-    aws_dst s3 sync "$STAGE/" "s3://$B/${PREFIX}" ${PUSH_FLAGS[@]+"${PUSH_FLAGS[@]}"}
+    _ms_log "  2/2 書き戻し: $STAGE/ -> s3://$DST_B/${PREFIX} ($DST_LABEL)"
+    aws_dst s3 sync "$STAGE/" "s3://$DST_B/${PREFIX}" ${PUSH_FLAGS[@]+"${PUSH_FLAGS[@]}"}
 
     N=$(find "$STAGE" -type f | wc -l | tr -d ' ')
     _ms_log "  完了: ${N} ファイル"
@@ -170,7 +202,7 @@ for B in $BUCKETS; do
 done
 
 echo
-_ms_log "同期完了: バケット $(echo "$BUCKETS" | wc -l | tr -d ' ')件 / ファイル ${TOTAL_O}件"
+_ms_log "同期完了: バケット $(printf '%s\n' "$BUCKETS" | wc -l | tr -d ' ')件 / ファイル ${TOTAL_O}件"
 if (( DRYRUN )); then
     _ms_log "dry-run のため何も書き込んでいません。実行するには --dry-run を外してください"
 fi

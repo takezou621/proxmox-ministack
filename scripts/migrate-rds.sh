@@ -133,13 +133,21 @@ if [[ ! -f "$OUT" ]]; then
             ;;
         mysql*)
             command -v mysqldump >/dev/null 2>&1 || { _ms_err "mysqldump がありません（brew install mysql-client など）"; exit 1; }
+            if [[ -z "$DBNAME" || "$DBNAME" == "NULL" ]]; then
+                _ms_err "MySQLのダンプにはデータベース名が必要です（describe-db-instances の DBName が空です）"
+                _ms_err "CreateDBInstance 時に --db-name を指定したインスタンスを使うか、dump後に手動調整してください"
+                exit 1
+            fi
             _ms_log "mysqldump -> $OUT"
+            # --databases を使わない（CREATE DATABASE/USE がdumpに入ると
+            # リストア時の --to-dbname が無効になるため、単一DBのダンプにする）。
+            # リストアは mysql "$TO_DBNAME" < dump で明示的に先を選ぶ
             MYSQL_PWD="${!DUMP_PW_ENV}" mysqldump \
                 -h "$HOST" -P "$PORT" -u "$USER" \
-                --databases "${DBNAME:-mysql}" --no-tablespaces --column-statistics=0 \
+                "$DBNAME" --no-tablespaces --column-statistics=0 \
                 > "$OUT" 2>/dev/null || MYSQL_PWD="${!DUMP_PW_ENV}" mysqldump \
                 -h "$HOST" -P "$PORT" -u "$USER" \
-                --databases "${DBNAME:-mysql}" --no-tablespaces > "$OUT"
+                "$DBNAME" --no-tablespaces > "$OUT"
             ;;
         *)
             _ms_err "未対応のエンジンです: ${ENGINE}（postgres / mysql 系のみ対応）"; exit 1 ;;
@@ -148,7 +156,12 @@ else
     _ms_log "既存のダンプを使います: $OUT"
 fi
 
-chmod 600 "$OUT" 2>/dev/null || true   # 既存ファイル流用時も所有者のみに制限
+# DBの中身（機密）が平文で入るため所有者のみ読み取り可能にする。
+# 権限設定に失敗する状態は移行を続行すべきでないので即停止する
+if ! chmod 600 "$OUT" 2>/dev/null; then
+    _ms_err "ダンプの権限を 600 に設定できません: $OUT"
+    exit 1
+fi
 DUMP_SIZE=$(du -h "$OUT" | cut -f1)
 _ms_log "ダンプ完了: $OUT ($DUMP_SIZE)"
 

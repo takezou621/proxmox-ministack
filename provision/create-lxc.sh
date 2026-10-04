@@ -24,7 +24,11 @@ CTID="${1:-210}"
 HOSTNAME="${2:-ministack}"
 IP="${3:-dhcp}"
 GW="${4:-}"
-STORAGE="${STORAGE:-local}"
+# ストレージは用途ごとに分ける:
+#   TEMPLATE_STORAGE — LXCテンプレートの保存先（pveamのダウンロード先。通常 local）
+#   ROOTFS_STORAGE   — コンテナのrootfsの保存先（local-lvm / ZFSプール等。環境に合わせる）
+TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
+ROOTFS_STORAGE="${ROOTFS_STORAGE:-local-lvm}"
 BRIDGE="${BRIDGE:-vmbr0}"
 MEMORY="${MEMORY:-4096}"
 CORES="${CORES:-2}"
@@ -40,14 +44,15 @@ if pct status "$CTID" >/dev/null 2>&1; then
 fi
 
 # ---- 1. テンプレート ------------------------------------------------------------
-echo "== Debian 12 テンプレートを確認/ダウンロード =="
+echo "== Debian 12 テンプレートを確認/ダウンロード（保存先: ${TEMPLATE_STORAGE}） =="
 pveam update >/dev/null
-TEMPLATE="$(pveam available --section local | awk '/debian-12-standard/ {print $2}' | sort -V | tail -1)"
+# OSテンプレートは system セクションで検索する（local セクションには現れない）
+TEMPLATE="$(pveam available --section system | awk '/debian-12-standard/ {print $2}' | sort -V | tail -1)"
 if [[ -z "$TEMPLATE" ]]; then
     echo "error: debian-12-standard テンプレートが見つかりません" >&2
     exit 1
 fi
-pveam list "$STORAGE" | grep -q "$TEMPLATE" || pveam download "$STORAGE" "$TEMPLATE"
+pveam list "$TEMPLATE_STORAGE" | grep -q "$TEMPLATE" || pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
 
 # ---- 2. LXC作成 -------------------------------------------------------------------
 echo "== LXC作成: CT$CTID / $HOSTNAME / mem=${MEMORY}MB / cores=$CORES / disk=${DISK}G =="
@@ -57,10 +62,10 @@ else
     NET0="name=eth0,bridge=${BRIDGE},ip=${IP},gateway=${GW}"
 fi
 
-pct create "$CTID" "${STORAGE}:vztmpl/${TEMPLATE}" \
+pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
     --hostname "$HOSTNAME" \
     --net0 "$NET0" \
-    --rootfs "${STORAGE}-lvm:${DISK}" \
+    --rootfs "${ROOTFS_STORAGE}:${DISK}" \
     --memory "$MEMORY" \
     --swap 2048 \
     --cores "$CORES" \

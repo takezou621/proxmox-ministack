@@ -65,9 +65,23 @@ scripts/migrate-s3.sh --bucket my-app-assets --prefix uploads/
 - 仕組み: 2段階の `aws s3 sync`（一度ローカルに受けてから書き戻す）なので
   **再実行しても差分だけ転送**されます
 - バケット自体は存在しなければ自動作成されます（リージョン配置も正しく）
+- **バケット名が環境で変わる場合**（例: `*-ministack-artifacts` → `*-prod-artifacts`）は
+  `--bucket src:dst` または `--map` で対応付けます:
+
+  ```bash
+  scripts/migrate-s3.sh --map my-app-ministack-artifacts:my-app-prod-artifacts
+  # 複数まとめて: --bucket src1,src2:dst2
+  ```
 - 数十GB以上なら [rclone](https://rclone.org/)（2つのS3リモートを直接同期可）を推奨
 
 ## 6. RDSデータの移行
+
+> **前提: 本番RDSインスタンス自体はこのリポジトリのサンプルスタックには含まれていません**
+> （`terraform/base-stack` は S3/DynamoDB/SQS/SSM のみを定義しています）。
+> `scripts/migrate-rds.sh --to-identifier` が解決できるよう、先に次のいずれかを行ってください:
+>
+> 1. `aws_db_instance` リソースを含むスタックを追加し `scripts/tf.sh aws apply` で作成する（推奨）
+> 2. または AWS コンソール / `aws rds create-db-instance` で手動作成する
 
 ```bash
 # MiniStack側のDBインスタンス確認:
@@ -85,7 +99,7 @@ scripts/migrate-rds.sh --db mydb --out mydb.sql \
 
 注意点:
 
-- 本番RDSインスタンス自体は **事前に Terraform（tf.sh aws apply）で作成済み** にする
+- 本番RDSインスタンス自体は **事前に作成済み** にする（上記「前提」参照）
 - `--to-dbname` の初期データベースは本番側に存在する必要がある（Terraformの
   `aws_db_instance` で `db_name` を指定しておくと楽）
 - シーケンス（SERIALの現在値）は必要に応じ `setval` で再調整
@@ -146,20 +160,33 @@ AWS_SECRET_ACCESS_KEY=test
 
 **いつでも戻せる**のがこのアーキテクチャの利点です。
 
-```bash
-# 1. AWS側リソースを削除（課税停止）
-scripts/tf.sh aws destroy
+> **順序が重要**: AWS側リソースは **データ退避と復元検証が済んでから** destroy します。
+> `terraform destroy` は `app_table` 等のデータ保護設定のないリソースを
+> そのまま消すため、先にdestroyするとデータが失われます（リソースの削除は不可逆）。
 
-# 2. 必要ならデータも自宅へ戻す
+```bash
+# 1. 必要なデータを自宅へ退避し、復元を検証する（この間AWS側は書き込み停止にしておく）
 scripts/migrate-s3.sh --from aws --to ministack
 export DB_PW=... PROD_PW=...
-scripts/migrate-rds.sh --db mydb --from aws --to-identifier mydb --out rollback.sql \
-    --to-host <ProxmoxホストIP> --to-port 15432 --to-user admin --to-password-env DB_PW --yes
-# ※ AWS→MiniStack のdumpは --from aws を指定（現状ダンプ元情報は手動指定）
+scripts/migrate-rds.sh --from aws --db mydb-prod --password-env PROD_PW --out rollback.sql \
+    --to-host <ProxmoxホストIP> --to-port 15432 --to-dbname appdb \
+    --to-user admin --to-password-env DB_PW --yes
+# 復元結果をアプリで確認する
+
+# 2. 検証が済んだら AWS側リソースを削除（課税停止）
+scripts/tf.sh aws destroy
 
 # 3. ローカルに再デプロイ
 scripts/tf.sh ministack apply
 ```
+
+補足:
+
+- `terraform destroy` は `force_destroy` 未設定のバケットにオブジェクトが残ると
+  削除に失敗します（本物のAWSと同様）。destroy 前に `ms_s3_purge <bucket>` で
+  空にするか、データ退避後に残すオブジェクトを確認してください
+- 移行済みのS3バケットは `migrate-s3.sh --bucket my-bucket --from aws --to ministack` の
+  ように名前対応付け（`--map src:dst`）もできます
 
 ---
 
@@ -167,5 +194,6 @@ scripts/tf.sh ministack apply
 
 - [ ] `aws budgets` または請求アラートの設定（コスト監視）
 - [ ] `terraform/base-stack/envs/aws.backend.hcl` の stateバケットを本番用に変更したか
+      （**bootstrap はこのファイルの名前を読んで作成する**ので、変更は bootstrap 実行前に）
 - [ ] MiniStack側の `.env` / テストデータを残すか消すか決定（`make reset`）
 - [ ] Route53のNSレジストラ反映待ち（最大48時間の余裕を見る）

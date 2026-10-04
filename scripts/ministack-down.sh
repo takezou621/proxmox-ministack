@@ -19,6 +19,24 @@ if (( RESET_DATA )); then
     [[ "$ans" == "yes" ]] || { _ms_log "中断しました"; exit 1; }
     rm -rf "$MS_ROOT/compose/data"
     _ms_log "データを削除しました"
+
+    # RDS_PERSIST=1 で作られた RDS のデータボリュームも削除する
+    # （compose 管理外の Docker 名前付きボリューム。命名は MiniStack の
+    #   ministack/services/rds.py の規約: ministack-rds-*-data）
+    RDS_VOLUMES="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep '^ministack-rds-' || true)"
+    if [[ -n "$RDS_VOLUMES" ]]; then
+        _ms_warn "RDSのデータボリュームが見つかりました（DBのデータが消えます）:"
+        printf '%s\n' "$RDS_VOLUMES" | sed 's/^/    /' >&2
+        read -r -p "これらのボリュームも削除しますか? yes と入力: " ans2
+        if [[ "$ans2" == "yes" ]]; then
+            printf '%s\n' "$RDS_VOLUMES" | xargs docker volume rm >/dev/null 2>&1 || {
+                _ms_warn "一部のボリュームが削除できませんでした（コンテナが掴んでいる可能性）。以下で確認してください: docker volume ls | grep ministack-rds"
+            }
+            _ms_log "RDSボリュームを削除しました"
+        else
+            _ms_log "RDSボリュームは残しています"
+        fi
+    fi
 fi
 
 # RDS/ElastiCache の「本物のコンテナ」は compose 管理外なので掃除する

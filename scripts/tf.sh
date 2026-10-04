@@ -88,12 +88,22 @@ case "$ENV" in
         )
         ;;
     aws)
-        # 本番backendにテスト用のローカルstateが持ち込まれる事故を防ぐ（先にローカルチェック）
-        if [[ -s terraform.tfstate ]]; then
-            _ms_err "ローカルに terraform.tfstate が残っています（local モードのstateの可能性）"
+        # 本番backendにテスト用のローカルstateが持ち込まれる事故を防ぐ（先にローカルチェック）。
+        # 名前付き workspace の state（terraform.tfstate.d/*/terraform.tfstate）も対象。
+        # -force-copy はworkspace stateも確認なしで移行し、同名のAWS側stateを
+        # 上書きし得るため、非空のローカルstateがある時点で拒否する
+        LOCAL_STATE=""
+        [[ -s terraform.tfstate ]] && LOCAL_STATE="terraform.tfstate"
+        if [[ -d terraform.tfstate.d ]]; then
+            WS_STATE="$(find terraform.tfstate.d -type f -name 'terraform.tfstate' -size +0c 2>/dev/null | head -5 || true)"
+            [[ -n "$WS_STATE" ]] && LOCAL_STATE="${LOCAL_STATE:+$LOCAL_STATE, }$WS_STATE"
+        fi
+        if [[ -n "$LOCAL_STATE" ]]; then
+            _ms_err "ローカルに state が残っています: $LOCAL_STATE"
             _ms_err "aws バックエンドへは移行しません。以下のいずれかを行ってください:"
             _ms_err "  - 続行: mv terraform.tfstate terraform.tfstate.local-backup"
             _ms_err "  - local のリソースを片付ける: scripts/tf.sh local destroy"
+            _ms_err "  - workspace の state を確認: terraform workspace list"
             exit 1
         fi
         # ms_use 済みのシェルから呼ばれても確実に本物へ向ける（認証確認・init の前に実行）
