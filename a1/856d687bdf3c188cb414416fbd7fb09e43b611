@@ -1,0 +1,14 @@
+cubic.yaml
+  h_864205080385bc 1-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a1856d687bdf3c188cb414416fbd7fb09e43b611",
+  "prompts": {},
+  "humans": {
+    "h_864205080385bc": {
+      "author": "takezou621 <takezou621@gmail.com>"
+    }
+  }
+}
