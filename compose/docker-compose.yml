@@ -58,6 +58,31 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+    # ---- 実環境への誤送信を構造的に防ぐ（ローカル専用エミュレータ向けの安全策） ----
+    # MiniStack は SNS の HTTPS 購読確認や EventBridge の API destination、API Gateway の HTTP 統合を、
+    # 設定されたURLへ「実際に」送信する。Terraform を本番/各環境の構成のまま流し込むと、実在する
+    # 環境のAPI（例: api-feature.cloudlegal.ai）へ POST してしまうため、既知の実環境ホスト名を
+    # コンテナ内で 127.0.0.1 に解決させ、接続を拒否させる（名前解決だけの遮断。443 は listen していない）。
+    # ・MiniStack コンテナにだけ効く。ホストや Terraform(クライアント側)の名前解決には影響しない。
+    # ・MiniStack が起動する兄弟コンテナ（RDS 等）には引き継がれない（それらは外部送信をしない）。
+    # ・ワイルドカード不可のため、新しい環境ホストが増えたらここへ追記すること。
+    extra_hosts:
+      - "api.cloudlegal.ai:127.0.0.1"
+      - "api-stg.cloudlegal.ai:127.0.0.1"
+      - "api-feature.cloudlegal.ai:127.0.0.1"
+      - "api-partner.cloudlegal.ai:127.0.0.1"
+      - "public-api.cloudlegal.ai:127.0.0.1"
+      - "public-api-stg.cloudlegal.ai:127.0.0.1"
+      - "public-api-feature.cloudlegal.ai:127.0.0.1"
+      - "public-api-partner.cloudlegal.ai:127.0.0.1"
+      - "www.cloudlegal.ai:127.0.0.1"
+      - "www-stg.cloudlegal.ai:127.0.0.1"
+      - "www-feature.cloudlegal.ai:127.0.0.1"
+      - "partner.cloudlegal.ai:127.0.0.1"
+      - "eombtfiotk.execute-api.ap-northeast-1.amazonaws.com:127.0.0.1"
+      - "lwbhl4wr0e.execute-api.ap-northeast-1.amazonaws.com:127.0.0.1"
+      - "oa8zxbgwqf.execute-api.ap-northeast-1.amazonaws.com:127.0.0.1"
+      - "uuimnfpdul.execute-api.ap-northeast-1.amazonaws.com:127.0.0.1"
     restart: unless-stopped
     depends_on:
       redis:
