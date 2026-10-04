@@ -106,6 +106,31 @@ CIに組み込む場合は `AWS_ENDPOINT_URL=http://<IP>:4566` 等を直接 expo
 
 ---
 
+## 実環境への誤送信を防ぐ（MINISTACK_BLOCKED_HOSTS）
+
+MiniStack は、次の3つを、設定された URL へ**実際に送信**します（エミュレートして終わりではありません）。
+
+- SNS の HTTPS 購読の確認（`SubscriptionConfirmation`）
+- EventBridge の API destination（`rate(...)` などの定期実行を含む）
+- API Gateway の HTTP 統合
+
+実在する環境（本番・ステージング等）の Terraform 構成をそのまま流し込むと、その環境の API へ誤って POST してしまいます。
+これを防ぐため、`.env` の `MINISTACK_BLOCKED_HOSTS` に対象のホスト名を列挙します。
+
+```bash
+# .env（コミットしない）
+MINISTACK_BLOCKED_HOSTS="api.example.com,api-stg.example.com,xxxx.execute-api.ap-northeast-1.amazonaws.com"
+```
+
+`scripts/ministack-up.sh` が、`compose/docker-compose.blocked-hosts.yml`（自動生成・コミット対象外）を作り、
+指定したホスト名を MiniStack コンテナ内で `127.0.0.1` に解決させます（`extra_hosts`）。接続は拒否されます。
+
+- 効くのは **MiniStack コンテナ内だけ**です。ホストや Terraform クライアントの名前解決には影響しません。
+- **名前解決の遮断**なので、IP アドレスを直接書いた URL やワイルドカードは防げません。環境のホストが増えたら追記してください。
+- 反映には MiniStack コンテナの再作成が必要です（`scripts/ministack-up.sh` で再作成されます。データは永続化で保持されます）。
+- 流し込む前に、`terraform plan` の中身で、外部 URL を指すリソース（SNS の http(s) 購読、`aws_cloudwatch_event_api_destination` など）が
+  含まれていないかを確認することも有効です（ホスト名の列挙漏れへの二重の備え）。
+
 ## 状態のリセット
 
 ```bash

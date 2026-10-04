@@ -281,3 +281,31 @@ ms_s3_purge() {
     ms_aws s3 rm "s3://$bucket/" --recursive >/dev/null 2>&1 || true
     _ms_log "バケットを空にしました: s3://$bucket"
 }
+
+# ms_write_blocked_hosts_override — MINISTACK_BLOCKED_HOSTS から compose の上書きファイルを生成する
+#   MiniStack は SNS の HTTPS 購読確認・EventBridge の API destination・API Gateway の HTTP 統合を、
+#   設定された URL へ「実際に」送信する。実在する環境の構成を流し込むと、その環境へ誤送信してしまうため、
+#   指定したホスト名を MiniStack コンテナ内で 127.0.0.1 に解決させて接続を拒否させる（extra_hosts）。
+#   ホスト名は .env（コミットしない）で指定する: MINISTACK_BLOCKED_HOSTS="api.example.com,api-stg.example.com"
+#   生成物: compose/docker-compose.blocked-hosts.yml（.gitignore 対象。未指定なら空の上書き）
+ms_write_blocked_hosts_override() {
+    local out="$MS_ROOT/compose/docker-compose.blocked-hosts.yml"
+    local raw="${MINISTACK_BLOCKED_HOSTS:-}" h n=0
+    {
+        echo "# scripts/ministack-up.sh が .env の MINISTACK_BLOCKED_HOSTS から自動生成する。編集しない（.gitignore 対象）"
+        if [[ -z "${raw//[[:space:],]/}" ]]; then
+            echo "services: {}"
+        else
+            echo "services:"
+            echo "  ministack:"
+            echo "    extra_hosts:"
+            for h in ${raw//,/ }; do
+                # YAML への混入を避けるため、ホスト名として妥当な文字だけを許す
+                [[ "$h" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]] || { _ms_err "MINISTACK_BLOCKED_HOSTS に不正なホスト名があります: $h"; return 1; }
+                echo "      - \"$h:127.0.0.1\""
+                n=$((n + 1))
+            done
+        fi
+    } > "$out"
+    MS_BLOCKED_HOSTS_COUNT=$n
+}
