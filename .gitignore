@@ -3,6 +3,10 @@
 
 # ---- MiniStack のデータ永続化ディレクトリ ----
 compose/data/
+# reset 時に退避されるデータ（compose/data.bak-<日時>/）
+compose/data.bak-*/
+# MINISTACK_BLOCKED_HOSTS から自動生成される上書き（実環境のホスト名を含み得る）
+compose/docker-compose.blocked-hosts.yml
 
 # ---- Terraform ----
 .terraform/
